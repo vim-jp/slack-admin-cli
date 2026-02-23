@@ -1,9 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/manifoldco/promptui"
@@ -85,30 +87,128 @@ func selectAction() (action, error) {
 	return actions[index], nil
 }
 
+func resolveUser(api *slack.Client, name string) (string, error) {
+	name = strings.TrimPrefix(name, "@")
+	users, err := api.GetUsers()
+	if err != nil {
+		return "", err
+	}
+	for _, u := range users {
+		if u.Name == name {
+			return u.ID, nil
+		}
+	}
+	return "", fmt.Errorf("user %q not found", name)
+}
+
+func resolveChannel(api *slack.Client, name string) (string, error) {
+	name = strings.TrimPrefix(name, "#")
+	var cursor string
+	for {
+		params := &slack.GetConversationsParameters{
+			Cursor:          cursor,
+			Limit:           1000,
+			ExcludeArchived: true,
+		}
+		channels, nextCursor, err := api.GetConversations(params)
+		if err != nil {
+			return "", err
+		}
+		for _, ch := range channels {
+			if ch.Name == name {
+				return ch.ID, nil
+			}
+		}
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return "", fmt.Errorf("channel %q not found", name)
+}
+
 func main() {
 	_ = godotenv.Load()
 
+	var (
+		flagAction  bool
+		flagMessage string
+		flagChannel string
+		flagUser    string
+	)
+	flag.BoolVar(&flagAction, "a", false, "アクション選択モード")
+	flag.StringVar(&flagMessage, "m", "", "送信するメッセージ")
+	flag.StringVar(&flagChannel, "c", "", "送信先チャンネル")
+	flag.StringVar(&flagUser, "u", "", "送信先ユーザー (DM)")
+	flag.Parse()
+
 	token := os.Getenv("SLACK_TOKEN")
-	channel := os.Getenv("SLACK_CHANNEL")
-
-	if token == "" || channel == "" {
-		fmt.Fprintln(os.Stderr, "SLACK_TOKEN / SLACK_CHANNEL required")
-		os.Exit(1)
-	}
-
-	selected, err := selectAction()
-	if err != nil {
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "SLACK_TOKEN required")
 		os.Exit(1)
 	}
 
 	api := slack.New(token)
-	_, _, err = api.PostMessage(
-		channel,
-		slack.MsgOptionText(selected.emoji, false),
-	)
 
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "post error:", err)
+	switch {
+	case flagMessage != "":
+		var channelID string
+		switch {
+		case flagUser != "":
+			userID, err := resolveUser(api, flagUser)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "user error:", err)
+				os.Exit(1)
+			}
+			ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{
+				Users: []string{userID},
+			})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "open conversation error:", err)
+				os.Exit(1)
+			}
+			channelID = ch.ID
+		case flagChannel != "":
+			var err error
+			channelID, err = resolveChannel(api, flagChannel)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "channel error:", err)
+				os.Exit(1)
+			}
+		default:
+			fmt.Fprintln(os.Stderr, "-c (チャンネル) または -u (ユーザー) を指定してください")
+			os.Exit(1)
+		}
+		_, _, err := api.PostMessage(
+			channelID,
+			slack.MsgOptionText(flagMessage, false),
+		)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "post error:", err)
+			os.Exit(1)
+		}
+
+	case flagAction:
+		channelID, err := resolveChannel(api, "admin-activity")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "channel error:", err)
+			os.Exit(1)
+		}
+		selected, err := selectAction()
+		if err != nil {
+			os.Exit(1)
+		}
+		_, _, err = api.PostMessage(
+			channelID,
+			slack.MsgOptionText(selected.emoji, false),
+		)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "post error:", err)
+			os.Exit(1)
+		}
+
+	default:
+		fmt.Fprintln(os.Stderr, "使い方: admin-activity -a | admin-activity -m メッセージ -c チャンネル | admin-activity -m メッセージ -u ユーザー")
 		os.Exit(1)
 	}
 }
