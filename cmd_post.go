@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/slack-go/slack"
@@ -18,10 +19,14 @@ func cmdPost() *cli.Command {
 		Usage:   "チャンネルにメッセージを送信",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "message",
-				Aliases:  []string{"m"},
-				Usage:    "送信するメッセージ (- で標準入力から読み込み)",
-				Required: true,
+				Name:    "message",
+				Aliases: []string{"m"},
+				Usage:   "送信するメッセージ (- で標準入力から読み込み)",
+			},
+			&cli.BoolFlag{
+				Name:    "editor",
+				Aliases: []string{"e"},
+				Usage:   "エディタで編集 ($EDITOR, デフォルト vim)",
 			},
 			&cli.StringFlag{
 				Name:    "channel",
@@ -39,13 +44,46 @@ func cmdPost() *cli.Command {
 			message := cmd.String("message")
 			channel := cmd.String("channel")
 			threadTS := cmd.String("thread")
+			useEditor := cmd.Bool("editor")
 
-			if message == "-" {
+			switch {
+			case useEditor:
+				editor := os.Getenv("EDITOR")
+				if editor == "" {
+					editor = "vim"
+				}
+				tmpfile, err := os.CreateTemp("", "slack-post-*.txt")
+				if err != nil {
+					return fmt.Errorf("一時ファイル作成エラー: %w", err)
+				}
+				defer os.Remove(tmpfile.Name())
+				tmpfile.Close()
+
+				c := exec.Command(editor, tmpfile.Name())
+				c.Stdin = os.Stdin
+				c.Stdout = os.Stdout
+				c.Stderr = os.Stderr
+				if err := c.Run(); err != nil {
+					return fmt.Errorf("エディタエラー: %w", err)
+				}
+
+				edited, err := os.ReadFile(tmpfile.Name())
+				if err != nil {
+					return fmt.Errorf("一時ファイル読み込みエラー: %w", err)
+				}
+				message = strings.TrimRight(string(edited), "\n")
+				if message == "" {
+					fmt.Fprintln(os.Stderr, "メッセージが空です")
+					return nil
+				}
+			case message == "-":
 				b, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("stdin error: %w", err)
 				}
 				message = strings.TrimRight(string(b), "\n")
+			case message == "":
+				return fmt.Errorf("-m (メッセージ) または --editor を指定してください")
 			}
 
 			var channelID string
