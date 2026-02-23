@@ -1,7 +1,7 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -13,6 +13,7 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/mattn/go-tty"
 	"github.com/slack-go/slack"
+	"github.com/urfave/cli/v3"
 )
 
 type action struct {
@@ -140,153 +141,185 @@ func resolveChannel(api *slack.Client, name string) (string, error) {
 	return "", fmt.Errorf("channel %q not found", name)
 }
 
-func main() {
-	_ = godotenv.Load()
-
-	var (
-		flagAction   bool
-		flagList     bool
-		flagMessage  string
-		flagChannel  string
-		flagUser     string
-		flagThreadTS string
-	)
-	flag.BoolVar(&flagAction, "a", false, "アクション選択モード")
-	flag.BoolVar(&flagList, "l", false, "メンバ一覧をCSVでエクスポート")
-	flag.StringVar(&flagMessage, "m", "", "送信するメッセージ")
-	flag.StringVar(&flagChannel, "c", "", "送信先チャンネル")
-	flag.StringVar(&flagUser, "u", "", "送信先ユーザー (DM)")
-	flag.StringVar(&flagThreadTS, "t", "", "スレッドのタイムスタンプ (thread_ts)")
-	flag.Parse()
-
+func newAPI() *slack.Client {
 	token := os.Getenv("SLACK_TOKEN")
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "SLACK_TOKEN required")
 		os.Exit(1)
 	}
+	return slack.New(token)
+}
 
-	api := slack.New(token)
+func main() {
+	_ = godotenv.Load()
 
-	if flagMessage == "-" {
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "stdin error:", err)
-			os.Exit(1)
-		}
-		flagMessage = strings.TrimRight(string(b), "\n")
+	cmd := &cli.Command{
+		Name:  "slack-admin-cli",
+		Usage: "Slack管理用CLIツール",
+		Commands: []*cli.Command{
+			{
+				Name:    "action",
+				Aliases: []string{"a"},
+				Usage:   "アクション選択モード",
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					api := newAPI()
+					channelID, err := resolveChannel(api, "admin-activity")
+					if err != nil {
+						return fmt.Errorf("channel error: %w", err)
+					}
+					selected, err := selectAction()
+					if err != nil {
+						return err
+					}
+					_, _, err = api.PostMessage(
+						channelID,
+						slack.MsgOptionText(selected.emoji, false),
+					)
+					if err != nil {
+						return fmt.Errorf("post error: %w", err)
+					}
+					return nil
+				},
+			},
+			{
+				Name:    "list",
+				Aliases: []string{"l"},
+				Usage:   "メンバ一覧をCSVでエクスポート",
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					api := newAPI()
+					users, err := api.GetUsers()
+					if err != nil {
+						return fmt.Errorf("users error: %w", err)
+					}
+					w := csv.NewWriter(os.Stdout)
+					w.Write([]string{"id", "name", "real_name", "display_name", "email", "deleted", "is_bot"})
+					for _, u := range users {
+						if u.ID == "USLACKBOT" {
+							continue
+						}
+						deleted := "false"
+						if u.Deleted {
+							deleted = "true"
+						}
+						isBot := "false"
+						if u.IsBot {
+							isBot = "true"
+						}
+						w.Write([]string{
+							u.ID,
+							u.Name,
+							u.RealName,
+							u.Profile.DisplayName,
+							u.Profile.Email,
+							deleted,
+							isBot,
+						})
+					}
+					w.Flush()
+					return nil
+				},
+			},
+			{
+				Name:    "post",
+				Aliases: []string{"p"},
+				Usage:   "メッセージを送信",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "message",
+						Aliases:  []string{"m"},
+						Usage:    "送信するメッセージ (- で標準入力から読み込み)",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:    "channel",
+						Aliases: []string{"c"},
+						Usage:   "送信先チャンネル",
+					},
+					&cli.StringFlag{
+						Name:    "user",
+						Aliases: []string{"u"},
+						Usage:   "送信先ユーザー (DM)",
+					},
+					&cli.StringFlag{
+						Name:    "thread",
+						Aliases: []string{"t"},
+						Usage:   "スレッドのタイムスタンプ (thread_ts) またはSlack URL",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					api := newAPI()
+					message := cmd.String("message")
+					channel := cmd.String("channel")
+					user := cmd.String("user")
+					threadTS := cmd.String("thread")
+
+					if message == "-" {
+						b, err := io.ReadAll(os.Stdin)
+						if err != nil {
+							return fmt.Errorf("stdin error: %w", err)
+						}
+						message = strings.TrimRight(string(b), "\n")
+					}
+
+					var channelID string
+					switch {
+					case user != "":
+						userID, err := resolveUser(api, user)
+						if err != nil {
+							return fmt.Errorf("user error: %w", err)
+						}
+						ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{
+							Users: []string{userID},
+						})
+						if err != nil {
+							return fmt.Errorf("open conversation error: %w", err)
+						}
+						channelID = ch.ID
+					case channel != "":
+						var err error
+						channelID, err = resolveChannel(api, channel)
+						if err != nil {
+							return fmt.Errorf("channel error: %w", err)
+						}
+						// チャンネルに未参加の場合は参加を試みる (スコープ不足の場合は無視)
+						api.JoinConversation(channelID)
+					default:
+						// -t にURLが指定されている場合はチャンネルIDを抽出
+						if threadTS != "" {
+							if urlCh, ts, ok := parseMessageURL(threadTS); ok {
+								channelID = urlCh
+								threadTS = ts
+							}
+						}
+						if channelID == "" {
+							return fmt.Errorf("-c (チャンネル) または -u (ユーザー) を指定してください")
+						}
+					}
+
+					opts := []slack.MsgOption{
+						slack.MsgOptionText(message, false),
+					}
+					if threadTS != "" {
+						if urlCh, ts, ok := parseMessageURL(threadTS); ok {
+							threadTS = ts
+							if channelID == "" {
+								channelID = urlCh
+							}
+						}
+						opts = append(opts, slack.MsgOptionTS(threadTS))
+					}
+					_, _, err := api.PostMessage(channelID, opts...)
+					if err != nil {
+						return fmt.Errorf("post error: %w", err)
+					}
+					return nil
+				},
+			},
+		},
 	}
 
-	switch {
-	case flagList:
-		users, err := api.GetUsers()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "users error:", err)
-			os.Exit(1)
-		}
-		w := csv.NewWriter(os.Stdout)
-		w.Write([]string{"id", "name", "real_name", "display_name", "email", "deleted", "is_bot"})
-		for _, u := range users {
-			if u.ID == "USLACKBOT" {
-				continue
-			}
-			deleted := "false"
-			if u.Deleted {
-				deleted = "true"
-			}
-			isBot := "false"
-			if u.IsBot {
-				isBot = "true"
-			}
-			w.Write([]string{
-				u.ID,
-				u.Name,
-				u.RealName,
-				u.Profile.DisplayName,
-				u.Profile.Email,
-				deleted,
-				isBot,
-			})
-		}
-		w.Flush()
-
-	case flagMessage != "":
-		var channelID string
-		switch {
-		case flagUser != "":
-			userID, err := resolveUser(api, flagUser)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "user error:", err)
-				os.Exit(1)
-			}
-			ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{
-				Users: []string{userID},
-			})
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "open conversation error:", err)
-				os.Exit(1)
-			}
-			channelID = ch.ID
-		case flagChannel != "":
-			var err error
-			channelID, err = resolveChannel(api, flagChannel)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "channel error:", err)
-				os.Exit(1)
-			}
-			// チャンネルに未参加の場合は参加を試みる (スコープ不足の場合は無視)
-			api.JoinConversation(channelID)
-		default:
-			// -t にURLが指定されている場合はチャンネルIDを抽出
-			if flagThreadTS != "" {
-				if urlCh, ts, ok := parseMessageURL(flagThreadTS); ok {
-					channelID = urlCh
-					flagThreadTS = ts
-				}
-			}
-			if channelID == "" {
-				fmt.Fprintln(os.Stderr, "-c (チャンネル) または -u (ユーザー) を指定してください")
-				os.Exit(1)
-			}
-		}
-		opts := []slack.MsgOption{
-			slack.MsgOptionText(flagMessage, false),
-		}
-		if flagThreadTS != "" {
-			if urlCh, ts, ok := parseMessageURL(flagThreadTS); ok {
-				flagThreadTS = ts
-				if channelID == "" {
-					channelID = urlCh
-				}
-			}
-			opts = append(opts, slack.MsgOptionTS(flagThreadTS))
-		}
-		_, _, err := api.PostMessage(channelID, opts...)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "post error:", err)
-			os.Exit(1)
-		}
-
-	case flagAction:
-		channelID, err := resolveChannel(api, "admin-activity")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "channel error:", err)
-			os.Exit(1)
-		}
-		selected, err := selectAction()
-		if err != nil {
-			os.Exit(1)
-		}
-		_, _, err = api.PostMessage(
-			channelID,
-			slack.MsgOptionText(selected.emoji, false),
-		)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "post error:", err)
-			os.Exit(1)
-		}
-
-	default:
-		fmt.Fprintf(os.Stderr, "使い方: %[1]s -a | %[1]s -l | %[1]s -m メッセージ -c チャンネル | %[1]s -m メッセージ -u ユーザー\n", os.Args[0])
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

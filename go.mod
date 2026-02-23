@@ -13,5 +13,6 @@ require (
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/urfave/cli/v3 v3.6.2 // indirect
 	golang.org/x/sys v0.22.0 // indirect
 )
