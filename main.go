@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"os"
@@ -144,12 +145,14 @@ func main() {
 
 	var (
 		flagAction   bool
+		flagList     bool
 		flagMessage  string
 		flagChannel  string
 		flagUser     string
 		flagThreadTS string
 	)
 	flag.BoolVar(&flagAction, "a", false, "アクション選択モード")
+	flag.BoolVar(&flagList, "l", false, "メンバ一覧をCSVでエクスポート")
 	flag.StringVar(&flagMessage, "m", "", "送信するメッセージ")
 	flag.StringVar(&flagChannel, "c", "", "送信先チャンネル")
 	flag.StringVar(&flagUser, "u", "", "送信先ユーザー (DM)")
@@ -174,6 +177,38 @@ func main() {
 	}
 
 	switch {
+	case flagList:
+		users, err := api.GetUsers()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "users error:", err)
+			os.Exit(1)
+		}
+		w := csv.NewWriter(os.Stdout)
+		w.Write([]string{"id", "name", "real_name", "display_name", "email", "deleted", "is_bot"})
+		for _, u := range users {
+			if u.ID == "USLACKBOT" {
+				continue
+			}
+			deleted := "false"
+			if u.Deleted {
+				deleted = "true"
+			}
+			isBot := "false"
+			if u.IsBot {
+				isBot = "true"
+			}
+			w.Write([]string{
+				u.ID,
+				u.Name,
+				u.RealName,
+				u.Profile.DisplayName,
+				u.Profile.Email,
+				deleted,
+				isBot,
+			})
+		}
+		w.Flush()
+
 	case flagMessage != "":
 		var channelID string
 		switch {
@@ -251,7 +286,7 @@ func main() {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "使い方: %[1]s -a | %[1]s -m メッセージ -c チャンネル | %[1]s -m メッセージ -u ユーザー\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "使い方: %[1]s -a | %[1]s -l | %[1]s -m メッセージ -c チャンネル | %[1]s -m メッセージ -u ユーザー\n", os.Args[0])
 		os.Exit(1)
 	}
 }
