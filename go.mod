@@ -1,4 +1,4 @@
-module github.com/vim-jp/admin-activity
+module github.com/vim-jp/slack-admin-cli
 
 go 1.25.6
 

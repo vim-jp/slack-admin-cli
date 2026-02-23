@@ -208,7 +208,7 @@ func main() {
 		}
 
 	default:
-		fmt.Fprintln(os.Stderr, "使い方: admin-activity -a | admin-activity -m メッセージ -c チャンネル | admin-activity -m メッセージ -u ユーザー")
+		fmt.Fprintf(os.Stderr, "使い方: %[1]s -a | %[1]s -m メッセージ -c チャンネル | %[1]s -m メッセージ -u ユーザー\n", os.Args[0])
 		os.Exit(1)
 	}
 }
