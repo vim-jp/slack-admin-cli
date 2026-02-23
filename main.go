@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -101,6 +102,17 @@ func resolveUser(api *slack.Client, name string) (string, error) {
 	return "", fmt.Errorf("user %q not found", name)
 }
 
+var slackURLPattern = regexp.MustCompile(`/archives/([^/]+)/p(\d{10})(\d{6})`)
+
+// parseMessageURL parses a Slack message URL and returns channelID and thread_ts.
+func parseMessageURL(url string) (channelID, threadTS string, ok bool) {
+	m := slackURLPattern.FindStringSubmatch(url)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2] + "." + m[3], true
+}
+
 func resolveChannel(api *slack.Client, name string) (string, error) {
 	name = strings.TrimPrefix(name, "#")
 	var cursor string
@@ -131,15 +143,17 @@ func main() {
 	_ = godotenv.Load()
 
 	var (
-		flagAction  bool
-		flagMessage string
-		flagChannel string
-		flagUser    string
+		flagAction   bool
+		flagMessage  string
+		flagChannel  string
+		flagUser     string
+		flagThreadTS string
 	)
 	flag.BoolVar(&flagAction, "a", false, "アクション選択モード")
 	flag.StringVar(&flagMessage, "m", "", "送信するメッセージ")
 	flag.StringVar(&flagChannel, "c", "", "送信先チャンネル")
 	flag.StringVar(&flagUser, "u", "", "送信先ユーザー (DM)")
+	flag.StringVar(&flagThreadTS, "t", "", "スレッドのタイムスタンプ (thread_ts)")
 	flag.Parse()
 
 	token := os.Getenv("SLACK_TOKEN")
@@ -149,6 +163,15 @@ func main() {
 	}
 
 	api := slack.New(token)
+
+	if flagMessage == "-" {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "stdin error:", err)
+			os.Exit(1)
+		}
+		flagMessage = strings.TrimRight(string(b), "\n")
+	}
 
 	switch {
 	case flagMessage != "":
@@ -175,14 +198,34 @@ func main() {
 				fmt.Fprintln(os.Stderr, "channel error:", err)
 				os.Exit(1)
 			}
+			// チャンネルに未参加の場合は参加を試みる (スコープ不足の場合は無視)
+			api.JoinConversation(channelID)
 		default:
-			fmt.Fprintln(os.Stderr, "-c (チャンネル) または -u (ユーザー) を指定してください")
-			os.Exit(1)
+			// -t にURLが指定されている場合はチャンネルIDを抽出
+			if flagThreadTS != "" {
+				if urlCh, ts, ok := parseMessageURL(flagThreadTS); ok {
+					channelID = urlCh
+					flagThreadTS = ts
+				}
+			}
+			if channelID == "" {
+				fmt.Fprintln(os.Stderr, "-c (チャンネル) または -u (ユーザー) を指定してください")
+				os.Exit(1)
+			}
 		}
-		_, _, err := api.PostMessage(
-			channelID,
+		opts := []slack.MsgOption{
 			slack.MsgOptionText(flagMessage, false),
-		)
+		}
+		if flagThreadTS != "" {
+			if urlCh, ts, ok := parseMessageURL(flagThreadTS); ok {
+				flagThreadTS = ts
+				if channelID == "" {
+					channelID = urlCh
+				}
+			}
+			opts = append(opts, slack.MsgOptionTS(flagThreadTS))
+		}
+		_, _, err := api.PostMessage(channelID, opts...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "post error:", err)
 			os.Exit(1)
