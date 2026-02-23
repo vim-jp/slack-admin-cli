@@ -82,6 +82,7 @@ func main() {
 			cmdAction(),
 			cmdList(),
 			cmdPost(),
+			cmdDM(),
 			cmdEdit(),
 		},
 	}
