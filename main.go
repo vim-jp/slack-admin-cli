@@ -39,12 +39,17 @@ func resolveUser(api *slack.Client, name string) (string, error) {
 
 func resolveChannel(api *slack.Client, name string) (string, error) {
 	name = strings.TrimPrefix(name, "#")
+	// Accept channel IDs directly.
+	if strings.HasPrefix(name, "C") || strings.HasPrefix(name, "G") {
+		return name, nil
+	}
 	var cursor string
 	for {
 		params := &slack.GetConversationsParameters{
 			Cursor:          cursor,
 			Limit:           1000,
 			ExcludeArchived: true,
+			Types:           []string{"public_channel", "private_channel"},
 		}
 		channels, nextCursor, err := api.GetConversations(params)
 		if err != nil {
@@ -64,12 +69,20 @@ func resolveChannel(api *slack.Client, name string) (string, error) {
 }
 
 func newAPI() *slack.Client {
-	token := os.Getenv("SLACK_TOKEN")
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "SLACK_TOKEN required")
+	botToken := os.Getenv("SLACK_BOT_TOKEN")
+	if botToken == "" {
+		fmt.Fprintln(os.Stderr, "SLACK_BOT_TOKEN required")
 		os.Exit(1)
 	}
-	return slack.New(token)
+	appToken := os.Getenv("SLACK_APP_TOKEN")
+	if appToken == "" {
+		fmt.Fprintln(os.Stderr, "SLACK_APP_TOKEN required")
+		os.Exit(1)
+	}
+	return slack.New(
+		botToken,
+		slack.OptionAppLevelToken(appToken),
+	)
 }
 
 func main() {
@@ -84,6 +97,7 @@ func main() {
 			cmdPost(),
 			cmdDM(),
 			cmdEdit(),
+			cmdBot(),
 		},
 	}
 
