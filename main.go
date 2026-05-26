@@ -109,6 +109,7 @@ func main() {
 			cmdDM(),
 			cmdEdit(),
 			cmdBot(),
+			cmdBackup(),
 		},
 	}
 
