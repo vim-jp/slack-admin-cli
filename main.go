@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -23,18 +24,28 @@ func parseMessageURL(url string) (channelID, threadTS string, ok bool) {
 	return m[1], m[2] + "." + m[3], true
 }
 
-func resolveUser(api *slack.Client, name string) (string, error) {
-	name = strings.TrimPrefix(name, "@")
+func resolveUsers(api *slack.Client, names ...string) ([]string, error) {
+	ids := make([]string, 0, len(names))
+	namesMap := map[string]struct{}{}
+	for i := range names {
+		namesMap[strings.TrimPrefix(names[i], "@")] = struct{}{}
+	}
 	users, err := api.GetUsers()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, u := range users {
-		if u.Name == name {
-			return u.ID, nil
+		if _, ok := namesMap[u.Name]; ok {
+			ids = append(ids, u.ID)
 		}
 	}
-	return "", fmt.Errorf("user %q not found", name)
+	if len(ids) < len(names) {
+		return nil, errors.New("unable to find some users")
+	}
+	if len(ids) > len(names) {
+		return nil, errors.New("too many users were found")
+	}
+	return ids, nil
 }
 
 func resolveChannel(api *slack.Client, name string) (string, error) {
