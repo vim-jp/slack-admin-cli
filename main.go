@@ -105,6 +105,7 @@ func main() {
 		Commands: []*cli.Command{
 			cmdAction(),
 			cmdListMembers(),
+			cmdListChannels(),
 			cmdPost(),
 			cmdDM(),
 			cmdEdit(),
