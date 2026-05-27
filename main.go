@@ -104,7 +104,7 @@ func main() {
 		Usage: "Slack管理用CLIツール",
 		Commands: []*cli.Command{
 			cmdAction(),
-			cmdList(),
+			cmdListMembers(),
 			cmdPost(),
 			cmdDM(),
 			cmdEdit(),

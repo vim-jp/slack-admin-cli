@@ -9,10 +9,10 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func cmdList() *cli.Command {
+func cmdListMembers() *cli.Command {
 	return &cli.Command{
-		Name:    "list",
-		Aliases: []string{"l"},
+		Name:    "list-members",
+		Aliases: []string{"lm"},
 		Usage:   "メンバ一覧をCSVでエクスポート",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			api := newAPI()
