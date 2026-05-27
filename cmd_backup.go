@@ -57,7 +57,7 @@ func cmdBackup() *cli.Command {
 			}
 
 			fmt.Fprintln(os.Stderr, "チャンネル一覧を取得中...")
-			channelMap, err := buildChannelMap(api)
+			channelMap, err := buildChannelMap(api, userMap)
 			if err != nil {
 				return fmt.Errorf("channel map error: %w", err)
 			}
@@ -71,7 +71,7 @@ func cmdBackup() *cli.Command {
 			if channelName == "" {
 				channelName = channelID
 			}
-			outPath := filepath.Join(outDir, channelName+".md")
+			outPath := filepath.Join(outDir, sanitizeFilename(channelName)+".md")
 			out, err := os.Create(outPath)
 			if err != nil {
 				return fmt.Errorf("create error: %w", err)
@@ -140,25 +140,45 @@ func buildUserMap(api *slack.Client) (map[string]string, error) {
 	return m, nil
 }
 
-func buildChannelMap(api *slack.Client) (map[string]string, error) {
+func buildChannelMap(api *slack.Client, userMap map[string]string) (map[string]string, error) {
 	m := make(map[string]string)
-	var cursor string
-	for {
-		chs, next, err := api.GetConversations(&slack.GetConversationsParameters{
-			Cursor: cursor,
-			Limit:  1000,
-			Types:  []string{"public_channel", "private_channel"},
-		})
-		if err != nil {
-			return nil, err
+
+	collect := func(types []string) error {
+		var cursor string
+		for {
+			chs, next, err := api.GetConversations(&slack.GetConversationsParameters{
+				Cursor: cursor,
+				Limit:  1000,
+				Types:  types,
+			})
+			if err != nil {
+				return err
+			}
+			for _, c := range chs {
+				name := c.Name
+				if c.IsIM {
+					if u := userMap[c.User]; u != "" {
+						name = "dm-" + u
+					} else {
+						name = "dm-" + c.User
+					}
+				}
+				m[c.ID] = name
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
 		}
-		for _, c := range chs {
-			m[c.ID] = c.Name
-		}
-		if next == "" {
-			break
-		}
-		cursor = next
+		return nil
+	}
+
+	if err := collect([]string{"public_channel", "private_channel"}); err != nil {
+		return nil, err
+	}
+	// im / mpim need im:read / mpim:read; tolerate missing scopes so public channel backup still works.
+	if err := collect([]string{"im", "mpim"}); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: IM/MPIM 一覧の取得をスキップ (im:read / mpim:read 未付与?): %v\n", err)
 	}
 	return m, nil
 }
