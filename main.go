@@ -50,8 +50,8 @@ func resolveUsers(api *slack.Client, names ...string) ([]string, error) {
 
 func resolveChannel(api *slack.Client, name string) (string, error) {
 	name = strings.TrimPrefix(name, "#")
-	// Accept channel IDs directly.
-	if strings.HasPrefix(name, "C") || strings.HasPrefix(name, "G") {
+	// Accept channel IDs directly. C=public/private, G=mpim or legacy private, D=IM.
+	if strings.HasPrefix(name, "C") || strings.HasPrefix(name, "G") || strings.HasPrefix(name, "D") {
 		return name, nil
 	}
 	var cursor string
