@@ -19,6 +19,7 @@ import (
 var (
 	userRefPattern    = regexp.MustCompile(`<@(U[A-Z0-9]+)(?:\|[^>]*)?>`)
 	channelRefPattern = regexp.MustCompile(`<#(C[A-Z0-9]+)(?:\|([^>]*))?>`)
+	codeBlockPattern  = regexp.MustCompile("(?s)```.*?```")
 )
 
 func cmdBackup() *cli.Command {
@@ -294,6 +295,17 @@ func writeMessage(out io.Writer, msg slack.Message, userMap, channelMap map[stri
 }
 
 func resolveText(text string, userMap, channelMap map[string]string) string {
+	// Slack allows triple-backtick code blocks on a single line (```code```),
+	// which breaks Markdown rendering. Pull them out before rewriting mentions
+	// so their contents are left untouched, and re-emit them as fenced code
+	// blocks with the opening and closing fences on their own lines.
+	var codeBlocks []string
+	text = codeBlockPattern.ReplaceAllStringFunc(text, func(m string) string {
+		inner := strings.Trim(m[3:len(m)-3], "\n")
+		codeBlocks = append(codeBlocks, "\n```\n"+inner+"\n```\n")
+		return "\x00CB" + strconv.Itoa(len(codeBlocks)-1) + "\x00"
+	})
+
 	text = userRefPattern.ReplaceAllStringFunc(text, func(m string) string {
 		sub := userRefPattern.FindStringSubmatch(m)
 		if sub == nil {
@@ -317,6 +329,10 @@ func resolveText(text string, userMap, channelMap map[string]string) string {
 		}
 		return m
 	})
+
+	for i, cb := range codeBlocks {
+		text = strings.ReplaceAll(text, "\x00CB"+strconv.Itoa(i)+"\x00", cb)
+	}
 	return text
 }
 
