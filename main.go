@@ -106,6 +106,7 @@ func main() {
 			cmdAction(),
 			cmdListMembers(),
 			cmdPost(),
+			cmdReact(),
 			cmdDM(),
 			cmdEdit(),
 			cmdBot(),
