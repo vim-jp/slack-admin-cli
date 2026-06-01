@@ -110,6 +110,7 @@ func main() {
 			cmdEdit(),
 			cmdBot(),
 			cmdBackup(),
+			cmdEmoji(),
 		},
 	}
 
